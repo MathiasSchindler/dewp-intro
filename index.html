@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>German Wikipedia Top 100</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <main class="content">
+        <header class="page-header">
+          <div class="page-heading">
+            <p class="eyebrow">Wikimedia Pageviews API</p>
+            <h1>German Wikipedia Top 100</h1>
+            <h2 id="tableTitle">Top 100 articles</h2>
+            <p id="status" class="status" role="status">Loading data…</p>
+          </div>
+
+          <aside class="control-panel">
+            <form id="controls" class="controls">
+              <p class="control-hint">Switch month or day directly.</p>
+
+              <label id="monthField" class="selection-field">
+                <span>Month</span>
+                <div class="date-nav">
+                  <button type="button" class="nav-arrow" id="prevMonth" aria-label="Previous month">←</button>
+                  <input id="monthInput" name="month" type="month" />
+                  <button type="button" class="nav-arrow" id="nextMonth" aria-label="Next month">→</button>
+                </div>
+              </label>
+
+              <label id="dayField" class="selection-field">
+                <span>Day</span>
+                <div class="date-nav">
+                  <button type="button" class="nav-arrow" id="prevDay" aria-label="Previous day">←</button>
+                  <input id="dayInput" name="day" type="date" />
+                  <button type="button" class="nav-arrow" id="nextDay" aria-label="Next day">→</button>
+                </div>
+              </label>
+            </form>
+          </aside>
+        </header>
+
+        <div class="table-card">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Rank</th>
+                <th scope="col">Title name</th>
+                <th scope="col">Number of requests</th>
+                <th scope="col">Lead section</th>
+                <th scope="col">Lead stats</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody">
+              <tr>
+                <td colspan="5" class="empty-state">Loading…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>
