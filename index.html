@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>German Wikipedia Top 100</title>
+    <title>Beliebteste Artikel der deutschen Wikipedia</title>
     <link rel="stylesheet" href="styles.css" />
+    <script src="render.js" defer></script>
     <script src="script.js" defer></script>
   </head>
   <body>
@@ -13,50 +14,76 @@
         <header class="page-header">
           <div class="page-heading">
             <p class="eyebrow">Wikimedia Pageviews API</p>
-            <h1>German Wikipedia Top 100</h1>
-            <h2 id="tableTitle">Top 100 articles</h2>
-            <p id="status" class="status" role="status">Loading data…</p>
+            <h1>Beliebteste Artikel der deutschen Wikipedia</h1>
+            <h2 id="tableTitle">Zeitraum wird geladen…</h2>
+            <p id="status" class="status" role="status">Einträge werden geladen…</p>
           </div>
 
-          <aside class="control-panel">
-            <form id="controls" class="controls">
-              <p class="control-hint">Switch month or day directly.</p>
+          <div class="tool-panels">
+            <section class="filter-panel" aria-labelledby="wordFilterHeading">
+              <p id="wordFilterHeading" class="panel-title">Wortfilter</p>
+              <p class="panel-hint">Nur Artikel im gewünschten Wortbereich der Einleitung anzeigen.</p>
 
-              <label id="monthField" class="selection-field">
-                <span>Month</span>
-                <div class="date-nav">
-                  <button type="button" class="nav-arrow" id="prevMonth" aria-label="Previous month">←</button>
-                  <input id="monthInput" name="month" type="month" />
-                  <button type="button" class="nav-arrow" id="nextMonth" aria-label="Next month">→</button>
-                </div>
-              </label>
+              <div class="filter-summary">
+                <strong id="wordRangeLabel">0 bis ∞ Wörter</strong>
+                <button type="button" id="resetWordFilter" class="reset-filter">Zurücksetzen</button>
+              </div>
 
-              <label id="dayField" class="selection-field">
-                <span>Day</span>
-                <div class="date-nav">
-                  <button type="button" class="nav-arrow" id="prevDay" aria-label="Previous day">←</button>
-                  <input id="dayInput" name="day" type="date" />
-                  <button type="button" class="nav-arrow" id="nextDay" aria-label="Next day">→</button>
-                </div>
-              </label>
-            </form>
-          </aside>
+              <div class="range-slider">
+                <div class="range-track"></div>
+                <div class="range-fill" id="wordRangeFill"></div>
+                <input id="minWordsInput" class="range-input" type="range" min="0" max="100" value="0" step="1" aria-label="Untere Wortgrenze" />
+                <input id="maxWordsInput" class="range-input" type="range" min="0" max="100" value="100" step="1" aria-label="Obere Wortgrenze" />
+              </div>
+
+              <div class="range-scale" aria-hidden="true">
+                <span>0</span>
+                <span>∞</span>
+              </div>
+
+              <p id="wordFilterResult" class="filter-result">Alle Artikel sichtbar</p>
+            </section>
+
+            <aside class="control-panel">
+              <form id="controls" class="controls">
+                <p class="control-hint">Monat oder Tag direkt wechseln.</p>
+
+                <label id="monthField" class="selection-field">
+                  <span>Monat</span>
+                  <div class="date-nav">
+                    <button type="button" class="nav-arrow" id="prevMonth" aria-label="Vorheriger Monat">←</button>
+                    <input id="monthInput" name="month" type="month" />
+                    <button type="button" class="nav-arrow" id="nextMonth" aria-label="Nächster Monat">→</button>
+                  </div>
+                </label>
+
+                <label id="dayField" class="selection-field">
+                  <span>Tag</span>
+                  <div class="date-nav">
+                    <button type="button" class="nav-arrow" id="prevDay" aria-label="Vorheriger Tag">←</button>
+                    <input id="dayInput" name="day" type="date" />
+                    <button type="button" class="nav-arrow" id="nextDay" aria-label="Nächster Tag">→</button>
+                  </div>
+                </label>
+              </form>
+            </aside>
+          </div>
         </header>
 
         <div class="table-card">
           <table>
             <thead>
               <tr>
-                <th scope="col">Rank</th>
-                <th scope="col">Title name</th>
-                <th scope="col">Number of requests</th>
-                <th scope="col">Lead section</th>
-                <th scope="col">Lead stats</th>
+                <th scope="col">Rang</th>
+                <th scope="col">Titel</th>
+                <th scope="col">Aufrufe</th>
+                <th scope="col">Einleitung</th>
+                <th scope="col">Statistik</th>
               </tr>
             </thead>
             <tbody id="resultsBody">
               <tr>
-                <td colspan="5" class="empty-state">Loading…</td>
+                <td colspan="5" class="empty-state">Wird geladen…</td>
               </tr>
             </tbody>
           </table>

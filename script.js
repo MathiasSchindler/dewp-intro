@@ -9,8 +9,17 @@ const nextMonthButton = document.getElementById('nextMonth');
 const resultsBody = document.getElementById('resultsBody');
 const statusText = document.getElementById('status');
 const tableTitle = document.getElementById('tableTitle');
+const minWordsInput = document.getElementById('minWordsInput');
+const maxWordsInput = document.getElementById('maxWordsInput');
+const wordRangeLabel = document.getElementById('wordRangeLabel');
+const wordRangeFill = document.getElementById('wordRangeFill');
+const wordFilterResult = document.getElementById('wordFilterResult');
+const resetWordFilterButton = document.getElementById('resetWordFilter');
 const EXCLUDED_PREFIXES = ['Wikipedia:', 'Spezial:', 'Datei:', 'Special:', 'Benutzer:'];
-const EXCLUDED_ARTICLE_PATTERNS = [/^Nekrolog(?:[\s_(]|$)/i];
+const EXCLUDED_ARTICLE_PATTERNS = [
+  /^Nekrolog(?:[\s_(]|$)/i,
+  /^Hauptseite$/i
+];
 const WIKITEXT_CACHE_PREFIX = 'wikipedia-top100-wikitext:';
 const LEAD_REQUEST_INTERVAL_MS = 1000;
 const pendingLeadTasks = [];
@@ -19,6 +28,8 @@ let currentMode = 'month';
 let currentRenderToken = 0;
 let isLeadQueueRunning = false;
 let lastLeadRequestAt = 0;
+const WORD_FILTER_FALLBACK_MAX = 100;
+let currentWordFilterMax = WORD_FILTER_FALLBACK_MAX;
 
 function formatDateValue(date) {
   return date.toISOString().slice(0, 10);
@@ -57,275 +68,156 @@ function deleteCachedWikitext(articleName) {
   }
 }
 
-function decodeHtmlEntities(value) {
-  const textarea = document.createElement('textarea');
-  textarea.innerHTML = value;
-  return textarea.value;
+const renderer = window.WikitextRenderer;
+
+if (!renderer) {
+  throw new Error('render.js konnte nicht geladen werden.');
 }
 
-function escapeHtml(value) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+const {
+  formatArticleTitle,
+  buildWikipediaUrl,
+  extractLeadWikitext,
+  buildLeadAnalysis
+} = renderer;
+
+function getArticleRows() {
+  return Array.from(resultsBody.querySelectorAll('tr[data-article-row="true"]'));
 }
 
-function escapeAttribute(value) {
-  return escapeHtml(value).replaceAll("'", '&#39;');
+function formatWordBound(value) {
+  return value === Infinity ? '∞' : Number(value).toLocaleString('de-DE');
 }
 
-function findMatchingMarkupEnd(text, startIndex, openToken, closeToken) {
-  if (!text.startsWith(openToken, startIndex)) {
-    return -1;
-  }
-
-  let depth = 0;
-
-  for (let index = startIndex; index < text.length;) {
-    if (text.startsWith(openToken, index)) {
-      depth += 1;
-      index += openToken.length;
-      continue;
-    }
-
-    if (text.startsWith(closeToken, index)) {
-      depth -= 1;
-
-      if (depth === 0) {
-        return index;
-      }
-
-      index += closeToken.length;
-      continue;
-    }
-
-    index += 1;
-  }
-
-  return -1;
-}
-
-function extractLeadWikitext(wikitext) {
-  if (!wikitext) {
-    return '';
-  }
-
-  const normalized = wikitext.replace(/\r\n/g, '\n');
-  const leadLines = [];
-
-  for (const line of normalized.split('\n')) {
-    if (/^\s*=+\s*[^=].*?\s*=+\s*$/.test(line)) {
-      break;
-    }
-
-    leadLines.push(line);
-  }
-
-  return leadLines.join('\n').trim();
-}
-
-function stripNestedTemplates(text) {
-  let result = '';
-
-  for (let index = 0; index < text.length;) {
-    if (text.startsWith('{{', index)) {
-      const endIndex = findMatchingMarkupEnd(text, index, '{{', '}}');
-
-      if (endIndex === -1) {
-        break;
-      }
-
-      index = endIndex + 2;
-      continue;
-    }
-
-    result += text[index];
-    index += 1;
-  }
-
-  return result;
-}
-
-function stripMediaLinks(text) {
-  let result = '';
-
-  for (let index = 0; index < text.length;) {
-    if (text.startsWith('[[', index)) {
-      const endIndex = findMatchingMarkupEnd(text, index, '[[', ']]');
-
-      if (endIndex === -1) {
-        result += text.slice(index);
-        break;
-      }
-
-      const content = text.slice(index + 2, endIndex).trim();
-
-      if (/^(Datei|File|Bild|Image|Kategorie|Category):/i.test(content)) {
-        index = endIndex + 2;
-        continue;
-      }
-
-      result += text.slice(index, endIndex + 2);
-      index = endIndex + 2;
-      continue;
-    }
-
-    result += text[index];
-    index += 1;
-  }
-
-  return result;
-}
-
-function cleanLeadWikitext(wikitext) {
-  let cleaned = extractLeadWikitext(wikitext)
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<ref\b[^>]*\/>/gi, '')
-    .replace(/<ref\b[^>]*>[\s\S]*?<\/ref>/gi, '')
-    .replace(/__TOC__|__NOTOC__|__FORCETOC__|__INHALTSVERZEICHNIS_ERZWINGEN__/gi, '');
-
-  cleaned = stripNestedTemplates(cleaned);
-  cleaned = stripMediaLinks(cleaned);
-  cleaned = decodeHtmlEntities(cleaned);
-
-  return cleaned
-    .replace(/\[(https?:\/\/[^\s\]]+)\s+([^\]]+)\]/gi, '$2')
-    .replace(/\[(https?:\/\/[^\]]+)\]/gi, '$1')
-    .replace(/<[^>]+>/g, '')
-    .replace(/^[:;*#]+\s*/gm, '')
-    .replace(/[\u00A0\u202F\u2007]/g, ' ')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\s+\n/g, '\n')
-    .replace(/\n\s+/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function renderInlineWikitext(text) {
-  let html = '';
-
-  for (let index = 0; index < text.length;) {
-    if (text.startsWith("'''''", index)) {
-      const endIndex = text.indexOf("'''''", index + 5);
-
-      if (endIndex !== -1) {
-        html += `<strong><em>${renderInlineWikitext(text.slice(index + 5, endIndex))}</em></strong>`;
-        index = endIndex + 5;
-        continue;
-      }
-    }
-
-    if (text.startsWith("'''", index)) {
-      const endIndex = text.indexOf("'''", index + 3);
-
-      if (endIndex !== -1) {
-        html += `<strong>${renderInlineWikitext(text.slice(index + 3, endIndex))}</strong>`;
-        index = endIndex + 3;
-        continue;
-      }
-    }
-
-    if (text.startsWith("''", index)) {
-      const endIndex = text.indexOf("''", index + 2);
-
-      if (endIndex !== -1) {
-        html += `<em>${renderInlineWikitext(text.slice(index + 2, endIndex))}</em>`;
-        index = endIndex + 2;
-        continue;
-      }
-    }
-
-    if (text.startsWith('[[', index)) {
-      const endIndex = findMatchingMarkupEnd(text, index, '[[', ']]');
-
-      if (endIndex !== -1) {
-        const rawContent = text.slice(index + 2, endIndex).trim();
-
-        if (/^(Datei|File|Bild|Image|Kategorie|Category):/i.test(rawContent)) {
-          index = endIndex + 2;
-          continue;
-        }
-
-        let nextIndex = endIndex + 2;
-        let suffix = '';
-
-        while (nextIndex < text.length && /[0-9A-Za-zÀ-ÖØ-öø-ÿ-]/.test(text[nextIndex])) {
-          suffix += text[nextIndex];
-          nextIndex += 1;
-        }
-
-        const parts = rawContent.split('|');
-        const target = (parts.shift() || '').trim();
-        const labelSource = (parts.at(-1) || target).trim();
-        const label = `${formatArticleTitle(labelSource)}${suffix}`;
-
-        if (target) {
-          html += `<a href="${escapeAttribute(buildWikipediaUrl(target))}" target="_blank" rel="noopener noreferrer">${renderInlineWikitext(label)}</a>`;
-        } else {
-          html += escapeHtml(label);
-        }
-
-        index = nextIndex;
-        continue;
-      }
-    }
-
-    html += escapeHtml(text[index]);
-    index += 1;
-  }
-
-  return html;
-}
-
-function renderLeadMarkup(wikitext) {
-  const cleanedLead = cleanLeadWikitext(wikitext);
-
-  if (!cleanedLead) {
-    return '';
-  }
-
-  return cleanedLead
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.split('\n').map((line) => line.trim()).filter(Boolean).join(' '))
-    .filter(Boolean)
-    .map((paragraph) => `<p>${renderInlineWikitext(paragraph)}</p>`)
-    .join('');
-}
-
-function extractPlainTextFromHtml(html) {
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
-
-  return (temp.textContent || '')
-    .replace(/[\u00A0\u202F\u2007]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function buildLeadAnalysis(wikitext) {
-  const html = renderLeadMarkup(wikitext);
-  const plainText = extractPlainTextFromHtml(html);
+function getWordFilterState() {
+  const min = Number(minWordsInput.value || 0);
+  const upperValue = Number(maxWordsInput.value || currentWordFilterMax);
 
   return {
-    html,
-    plainText,
-    characterCount: plainText.length,
-    wordCount: plainText ? plainText.split(/\s+/u).length : 0
+    min,
+    upperValue,
+    max: upperValue >= currentWordFilterMax ? Infinity : upperValue,
+    isDefault: min === 0 && upperValue >= currentWordFilterMax
   };
+}
+
+function updateWordFilterSummary(visibleCount, totalCount, waitingCount, isDefault) {
+  if (!totalCount) {
+    wordFilterResult.textContent = 'Noch keine Artikel geladen.';
+    return;
+  }
+
+  if (isDefault) {
+    wordFilterResult.textContent = `Alle ${totalCount} Artikel sichtbar`;
+    return;
+  }
+
+  if (waitingCount > 0) {
+    wordFilterResult.textContent = `${visibleCount} Treffer · ${waitingCount} Artikel werden noch gezählt`;
+    return;
+  }
+
+  wordFilterResult.textContent = `${visibleCount} Treffer im gewählten Bereich`;
+}
+
+function applyWordFilter() {
+  const { min, max, isDefault } = getWordFilterState();
+  const articleRows = getArticleRows();
+  let visibleCount = 0;
+  let waitingCount = 0;
+
+  for (const row of articleRows) {
+    const wordCount = Number(row.dataset.wordCount);
+    const hasWordCount = Number.isFinite(wordCount);
+
+    if (!hasWordCount) {
+      waitingCount += 1;
+    }
+
+    const matches = isDefault || (hasWordCount && wordCount >= min && wordCount <= max);
+    row.hidden = !matches;
+
+    if (matches) {
+      visibleCount += 1;
+    }
+  }
+
+  updateWordFilterSummary(visibleCount, articleRows.length, waitingCount, isDefault);
+}
+
+function syncWordFilterUi() {
+  let minValue = Number(minWordsInput.value || 0);
+  let maxValue = Number(maxWordsInput.value || currentWordFilterMax);
+
+  if (minValue > maxValue) {
+    minValue = maxValue;
+    minWordsInput.value = String(minValue);
+  }
+
+  const upperLabel = maxValue >= currentWordFilterMax ? '∞' : formatWordBound(maxValue);
+  wordRangeLabel.textContent = `${formatWordBound(minValue)} bis ${upperLabel} Wörter`;
+  resetWordFilterButton.disabled = minValue === 0 && maxValue >= currentWordFilterMax;
+
+  const minPercent = currentWordFilterMax === 0 ? 0 : (minValue / currentWordFilterMax) * 100;
+  const maxPercent = currentWordFilterMax === 0 ? 100 : (maxValue / currentWordFilterMax) * 100;
+  wordRangeFill.style.left = `${minPercent}%`;
+  wordRangeFill.style.right = `${100 - maxPercent}%`;
+
+  applyWordFilter();
+}
+
+function updateWordFilterRange(nextWordCount = 0) {
+  const nextLimit = Math.max(
+    WORD_FILTER_FALLBACK_MAX,
+    Math.ceil(Number(nextWordCount || 0) / 25) * 25
+  );
+
+  if (nextLimit <= currentWordFilterMax) {
+    return;
+  }
+
+  const previousMax = currentWordFilterMax;
+  const currentUpper = Number(maxWordsInput.value || previousMax);
+  const upperWasOpen = currentUpper >= previousMax;
+
+  currentWordFilterMax = nextLimit;
+  minWordsInput.max = String(nextLimit);
+  maxWordsInput.max = String(nextLimit);
+
+  if (upperWasOpen || !maxWordsInput.value) {
+    maxWordsInput.value = String(nextLimit);
+  } else if (currentUpper > nextLimit) {
+    maxWordsInput.value = String(nextLimit);
+  }
+
+  if (Number(minWordsInput.value) > nextLimit) {
+    minWordsInput.value = String(nextLimit);
+  }
+
+  syncWordFilterUi();
+}
+
+function setRowWordCount(row, wordCount) {
+  if (!row) {
+    return;
+  }
+
+  row.dataset.wordCount = String(wordCount);
+  updateWordFilterRange(wordCount);
+  applyWordFilter();
 }
 
 function updateLeadStats(container, analysis = null, state = 'ready') {
   container.className = `lead-stats lead-${state}`;
 
   if (state !== 'ready' || !analysis) {
-    container.textContent = state === 'error' ? 'Stats unavailable' : 'Counting…';
+    container.textContent = state === 'error' ? 'Statistik nicht verfügbar' : 'Wird gezählt…';
     return;
   }
 
   container.innerHTML = `
-    <span><strong>${analysis.characterCount.toLocaleString('de-DE')}</strong> chars</span>
-    <span><strong>${analysis.wordCount.toLocaleString('de-DE')}</strong> words</span>
+    <span><strong>${analysis.characterCount.toLocaleString('de-DE')}</strong> Zeichen</span>
+    <span><strong>${analysis.wordCount.toLocaleString('de-DE')}</strong> Wörter</span>
   `;
 }
 
@@ -351,7 +243,7 @@ function setReloadButtonState(button, isLoading) {
 
 function reloadArticleLead(articleName, leadContainer, statsContainer, reloadButton, renderToken) {
   deleteCachedWikitext(articleName);
-  updateLeadContent(leadContainer, 'Reloading lead section…', 'loading');
+  updateLeadContent(leadContainer, 'Einleitung wird neu geladen…', 'loading');
   updateLeadStats(statsContainer, null, 'loading');
   setReloadButtonState(reloadButton, true);
   queueLeadSectionLoad(articleName, leadContainer, renderToken, {
@@ -449,23 +341,19 @@ function buildEndpoint(mode = currentMode) {
 function buildHeading(mode = currentMode) {
   if (mode === 'day') {
     const selectedDate = new Date(`${dayInput.value}T12:00:00`);
-    return `Top 100 articles for ${selectedDate.toLocaleDateString('en-GB', {
+    return selectedDate.toLocaleDateString('de-DE', {
       day: '2-digit',
       month: 'long',
       year: 'numeric'
-    })}`;
+    });
   }
 
   const [year, month] = monthInput.value.split('-');
   const selectedMonth = new Date(Number(year), Number(month) - 1, 1);
-  return `Top 100 articles for ${selectedMonth.toLocaleDateString('en-GB', {
+  return selectedMonth.toLocaleDateString('de-DE', {
     month: 'long',
     year: 'numeric'
-  })}`;
-}
-
-function formatArticleTitle(articleName) {
-  return articleName.replace(/_/g, ' ');
+  });
 }
 
 function isExcludedArticle(articleName) {
@@ -475,25 +363,17 @@ function isExcludedArticle(articleName) {
     || EXCLUDED_ARTICLE_PATTERNS.some((pattern) => pattern.test(displayTitle));
 }
 
-function buildWikipediaUrl(articleName) {
-  const normalizedTitle = articleName.replaceAll(' ', '_');
-  return `https://de.wikipedia.org/wiki/${encodeURIComponent(normalizedTitle)
-    .replace(/%2F/g, '/')
-    .replace(/%3A/g, ':')
-    .replace(/%23/g, '#')}`;
-}
-
 function updateLeadContent(container, leadText, state = 'ready') {
   container.className = `lead-text lead-${state}`;
 
   if (state === 'ready') {
-    const html = leadText.trim() || '<span class="lead-empty">No lead section found.</span>';
+    const html = leadText.trim() || '<span class="lead-empty">Keine Einleitung gefunden.</span>';
     container.innerHTML = html;
     requestAnimationFrame(() => syncLeadOverflowState(container));
     return;
   }
 
-  container.textContent = leadText.trim() || 'No lead section found.';
+  container.textContent = leadText.trim() || 'Keine Einleitung gefunden.';
   requestAnimationFrame(() => syncLeadOverflowState(container));
 }
 
@@ -533,7 +413,7 @@ async function fetchArticleWikitext(articleName, options = {}) {
     const response = await fetch(endpoint);
 
     if (!response.ok) {
-      throw new Error(`Lead request failed with status ${response.status}`);
+      throw new Error(`Abruf der Einleitung mit Status ${response.status} fehlgeschlagen`);
     }
 
     const payload = await response.json();
@@ -591,15 +471,18 @@ async function processLeadQueue() {
       }
 
       const analysis = buildLeadAnalysis(wikitext);
+      const row = task.leadContainer.closest('tr[data-article-row="true"]');
       updateLeadContent(task.leadContainer, analysis.html);
       updateLeadStats(task.statsContainer, analysis);
+      setRowWordCount(row, analysis.wordCount);
     } catch (error) {
       if (task.renderToken !== currentRenderToken) {
         continue;
       }
 
-      updateLeadContent(task.leadContainer, 'Lead section unavailable.', 'error');
+      updateLeadContent(task.leadContainer, 'Einleitung nicht verfügbar.', 'error');
       updateLeadStats(task.statsContainer, null, 'error');
+      applyWordFilter();
     } finally {
       setReloadButtonState(task.reloadButton, false);
     }
@@ -622,14 +505,16 @@ function renderRows(articles) {
     const cell = document.createElement('td');
     cell.colSpan = 5;
     cell.className = 'empty-state';
-    cell.textContent = 'No data was returned for this selection.';
+    cell.textContent = 'Für diese Auswahl wurden keine Daten zurückgegeben.';
     row.append(cell);
     resultsBody.append(row);
+    applyWordFilter();
     return;
   }
 
   topHundred.forEach((entry, index) => {
     const row = document.createElement('tr');
+    row.dataset.articleRow = 'true';
 
     const rankCell = document.createElement('td');
     rankCell.textContent = String(index + 1);
@@ -655,8 +540,8 @@ function renderRows(articles) {
     const reloadButton = document.createElement('button');
     reloadButton.type = 'button';
     reloadButton.className = 'reload-button';
-    reloadButton.title = `Reload lead section for ${formatArticleTitle(entry.article)}`;
-    reloadButton.setAttribute('aria-label', `Reload lead section for ${formatArticleTitle(entry.article)}`);
+    reloadButton.title = `Einleitung für ${formatArticleTitle(entry.article)} neu laden`;
+    reloadButton.setAttribute('aria-label', `Einleitung für ${formatArticleTitle(entry.article)} neu laden`);
     reloadButton.textContent = '↻';
     reloadButton.addEventListener('click', () => {
       reloadArticleLead(entry.article, leadContent, statsContent, reloadButton, renderToken);
@@ -668,10 +553,11 @@ function renderRows(articles) {
       const analysis = buildLeadAnalysis(cachedWikitext);
       updateLeadContent(leadContent, analysis.html);
       updateLeadStats(statsContent, analysis);
+      setRowWordCount(row, analysis.wordCount);
       setReloadButtonState(reloadButton, false);
     } else {
       leadContent.className = 'lead-text lead-loading';
-      leadContent.textContent = 'Loading lead section…';
+      leadContent.textContent = 'Einleitung wird geladen…';
       updateLeadStats(statsContent, null, 'loading');
       setReloadButtonState(reloadButton, true);
       queueLeadSectionLoad(entry.article, leadContent, renderToken, {
@@ -685,6 +571,8 @@ function renderRows(articles) {
     row.append(rankCell, titleCell, viewsCell, leadCell, statsCell);
     resultsBody.append(row);
   });
+
+  applyWordFilter();
 }
 
 async function loadStatistics(mode = currentMode) {
@@ -694,39 +582,62 @@ async function loadStatistics(mode = currentMode) {
   const hasMonth = mode === 'month' && monthInput.value;
 
   if (!hasDay && !hasMonth) {
-    statusText.textContent = 'Please choose a valid day or month.';
+    statusText.textContent = 'Bitte wählen Sie einen gültigen Tag oder Monat.';
     return;
   }
 
   const endpoint = buildEndpoint(mode);
   tableTitle.textContent = buildHeading(mode);
-  statusText.textContent = 'Loading data…';
+  statusText.textContent = 'Einträge werden geladen…';
 
   try {
     const response = await fetch(endpoint);
 
     if (!response.ok) {
       if (response.status === 404) {
-        throw new Error('No data is available yet for that selection. Try an earlier day or month.');
+        throw new Error('Für diese Auswahl sind noch keine Daten verfügbar. Versuchen Sie einen früheren Tag oder Monat.');
       }
 
-      throw new Error(`Request failed with status ${response.status}`);
+      throw new Error(`Anfrage mit Status ${response.status} fehlgeschlagen`);
     }
 
     const payload = await response.json();
     const articles = payload.items?.[0]?.articles ?? [];
     const filteredCount = articles.filter((entry) => !isExcludedArticle(entry.article || '')).length;
     renderRows(articles);
-    statusText.textContent = `Loaded ${Math.min(100, filteredCount)} entries. Lead sections now fill in gradually and are cached in your browser.`;
+    statusText.textContent = `${Math.min(100, filteredCount)} Einträge geladen · Einleitungen werden ergänzt.`;
   } catch (error) {
     resultsBody.innerHTML = `
       <tr>
-        <td colspan="5" class="empty-state">Could not load data from Wikimedia.</td>
+        <td colspan="5" class="empty-state">Daten von Wikimedia konnten nicht geladen werden.</td>
       </tr>
     `;
     statusText.textContent = error.message;
+    applyWordFilter();
   }
 }
+
+minWordsInput.addEventListener('input', () => {
+  if (Number(minWordsInput.value) > Number(maxWordsInput.value)) {
+    maxWordsInput.value = minWordsInput.value;
+  }
+
+  syncWordFilterUi();
+});
+
+maxWordsInput.addEventListener('input', () => {
+  if (Number(maxWordsInput.value) < Number(minWordsInput.value)) {
+    minWordsInput.value = maxWordsInput.value;
+  }
+
+  syncWordFilterUi();
+});
+
+resetWordFilterButton.addEventListener('click', () => {
+  minWordsInput.value = '0';
+  maxWordsInput.value = String(currentWordFilterMax);
+  syncWordFilterUi();
+});
 
 dayInput.addEventListener('focus', () => setCurrentMode('day'));
 monthInput.addEventListener('focus', () => setCurrentMode('month'));
@@ -749,6 +660,7 @@ prevMonthButton.addEventListener('click', () => shiftMonthBy(-1));
 nextMonthButton.addEventListener('click', () => shiftMonthBy(1));
 
 setDefaultDates();
+syncWordFilterUi();
 setCurrentMode('month');
 updateNavigationState();
 loadStatistics('month');
